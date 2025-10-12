@@ -14,19 +14,17 @@ using EdgeLabel = unsigned;
 
 enum EdgeLabelType
 {
-    Addr,
-    AddrBar,
-    Copy,
-    CopyBar,
-    Store,
-    StoreBar,
-    Load,
-    LoadBar,
-    PT,
-    VF,
-    VFBar,
-    VA,
-    VABar
+    Addr, AddrBar,
+    Copy, CopyBar,
+    Store, StoreBar,
+    Load, LoadBar,
+    PT, PTBar,
+    SV, SVBar,
+    PV, PVBar,
+    VP, VPBar,
+    VF, VFBar,
+    VA, VABar,
+    LV, LVBar,
 };
 
 
@@ -127,7 +125,7 @@ public:
     /// Push a data into the END work list.
     inline bool push(const T &data)
     {
-        if (!this->find(data))
+        if (data_set.find(data) == data_set.end())
         {
             this->data_list.push_back(data);
             this->data_set.insert(data);
