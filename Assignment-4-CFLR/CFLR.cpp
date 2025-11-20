@@ -23,7 +23,6 @@ int main(int argc, char **argv)
 
     CFLR solver;
     solver.buildGraph(pag);
-    // TODO: complete this method
     solver.solve();
     solver.dumpResult();
 
@@ -31,69 +30,163 @@ int main(int argc, char **argv)
     return 0;
 }
 
-
 void CFLR::solve()
 {
-    //  1. implement the grammar production rules into code;
-    //  2. implement the dynamic-programming CFL-reachability algorithm.
+    // Helper function: add edge if not present
+    auto addEdgeIfAbsent = [&](unsigned src, unsigned dst, EdgeLabel label) {
+        if (!graph->hasEdge(src, dst, label))
+        {
+            graph->addEdge(src, dst, label);
+            workList.push(CFLREdge(src, dst, label));
+        }
+    };
+    
+    // Step 1: Collect all initial edges and nodes
+    std::unordered_set<unsigned> nodes;
+    std::vector<CFLREdge> initialEdges;
+    
+    auto &succMap = graph->getSuccessorMap();
+    for (auto &[src, labelMap] : succMap)
+    {
+        nodes.insert(src);
+        for (auto &[label, dstSet] : labelMap)
+        {
+            for (unsigned dst : dstSet)
+            {
+                nodes.insert(dst);
+                initialEdges.push_back(CFLREdge(src, dst, label));
+            }
+        }
+    }
+    
+    // Step 2: Push initial edges to worklist
+    for (const auto &edge : initialEdges)
+    {
+        workList.push(edge);
+    }
+    
+    // Step 3: Add epsilon edges
+    for (unsigned node : nodes)
+    {
+        addEdgeIfAbsent(node, node, EdgeLabelType::VF);
+        addEdgeIfAbsent(node, node, EdgeLabelType::VFBar);
+        addEdgeIfAbsent(node, node, EdgeLabelType::VA);
+        addEdgeIfAbsent(node, node, EdgeLabelType::VABar);
+    }
+    
+    // Step 4: Define grammar rules
+    // Unary rules
+    std::unordered_map<EdgeLabel, std::vector<EdgeLabel>> unaryRules{
+        {EdgeLabelType::Copy,    {EdgeLabelType::VF}},
+        {EdgeLabelType::CopyBar, {EdgeLabelType::VFBar}},
+    };
+    
+    // Binary rules: result ::= left right
+    std::vector<std::tuple<EdgeLabel, EdgeLabel, EdgeLabel>> binaryRules = {
+        // PT rules
+        {EdgeLabelType::PT,     EdgeLabelType::VFBar,   EdgeLabelType::AddrBar},
+        {EdgeLabelType::PTBar,  EdgeLabelType::Addr,    EdgeLabelType::VF},
+        
+        // VF rules
+        {EdgeLabelType::VF,     EdgeLabelType::VF,      EdgeLabelType::VF},
+        {EdgeLabelType::VF,     EdgeLabelType::SV,      EdgeLabelType::Load},
+        {EdgeLabelType::VF,     EdgeLabelType::PV,      EdgeLabelType::Load},
+        {EdgeLabelType::VF,     EdgeLabelType::Store,   EdgeLabelType::VP},
+        
+        // VFBar rules
+        {EdgeLabelType::VFBar,  EdgeLabelType::VFBar,   EdgeLabelType::VFBar},
+        {EdgeLabelType::VFBar,  EdgeLabelType::LoadBar, EdgeLabelType::SVBar},
+        {EdgeLabelType::VFBar,  EdgeLabelType::LoadBar, EdgeLabelType::VP},
+        {EdgeLabelType::VFBar,  EdgeLabelType::PV,      EdgeLabelType::StoreBar},
+        
+        // VA rules
+        {EdgeLabelType::VA,     EdgeLabelType::LV,      EdgeLabelType::Load},
+        {EdgeLabelType::VA,     EdgeLabelType::VFBar,   EdgeLabelType::VA},
+        {EdgeLabelType::VA,     EdgeLabelType::VA,      EdgeLabelType::VF},
+        {EdgeLabelType::VA,     EdgeLabelType::PT,      EdgeLabelType::PTBar},
+        
+        // VABar rules
+        {EdgeLabelType::VABar,  EdgeLabelType::VABar,   EdgeLabelType::VABar},
+        {EdgeLabelType::VABar,  EdgeLabelType::VF,      EdgeLabelType::VABar},
+        {EdgeLabelType::VABar,  EdgeLabelType::VA,      EdgeLabelType::VFBar},
+        {EdgeLabelType::VABar,  EdgeLabelType::PT,      EdgeLabelType::PTBar},
+        
+        // SV and SVBar rules
+        {EdgeLabelType::SV,     EdgeLabelType::Store,   EdgeLabelType::VA},
+        {EdgeLabelType::SVBar,  EdgeLabelType::VA,      EdgeLabelType::StoreBar},
+        
+        // PV and VP rules
+        {EdgeLabelType::PV,     EdgeLabelType::PTBar,   EdgeLabelType::VA},
+        {EdgeLabelType::VP,     EdgeLabelType::VA,      EdgeLabelType::PT},
+        
+        // PVBar and VPBar rules
+        {EdgeLabelType::PVBar,  EdgeLabelType::VABar,   EdgeLabelType::PT},
+        {EdgeLabelType::VPBar,  EdgeLabelType::PTBar,   EdgeLabelType::VABar},
+        
+        // LV rules
+        {EdgeLabelType::LV,     EdgeLabelType::LoadBar, EdgeLabelType::VA},
+        
+        // LVBar rules
+        {EdgeLabelType::LVBar,  EdgeLabelType::VA,      EdgeLabelType::Load},
+    };
+    
+    // Build lookup tables
+    std::unordered_map<EdgeLabel, std::vector<std::pair<EdgeLabel, EdgeLabel>>> leftRules;
+    std::unordered_map<EdgeLabel, std::vector<std::pair<EdgeLabel, EdgeLabel>>> rightRules;
+    
+    for (const auto &[result, left, right] : binaryRules)
+    {
+        leftRules[left].emplace_back(result, right);
+        rightRules[right].emplace_back(result, left);
+    }
+    
+    // Step 5: Main loop - CFL-Reachability algorithm
     while (!workList.empty())
     {
         CFLREdge edge = workList.pop();
         
-        // Rule: PT -> Addr
-        if (edge.label == Addr)
+        // Apply unary rules
+        if (auto it = unaryRules.find(edge.label); it != unaryRules.end())
         {
-            if (!graph->hasEdge(edge.src, edge.dst, PT))
+            for (EdgeLabel result : it->second)
             {
-                graph->addEdge(edge.src, edge.dst, PT);
-                workList.push(CFLREdge(edge.src, edge.dst, PT));
+                addEdgeIfAbsent(edge.src, edge.dst, result);
             }
         }
-
-        // Process forward and backward rules
-        processForwardRules(edge);
-        processBackwardRules(edge);
-    }
-}
-
-void CFLR::processForwardRules(const CFLREdge& edge)
-{
-    unsigned u = edge.src;
-    unsigned v = edge.dst;
-    EdgeLabel label = edge.label;
-
-    auto &succMap = graph->getSuccessorMap();
-    if (succMap.count(v))
-    {
-        for (auto const&[succ_label, succ_nodes] : succMap.at(v))
+        
+        // Apply binary rules (current edge as left operand)
+        if (auto it = leftRules.find(edge.label); it != leftRules.end())
         {
-            for (unsigned w : succ_nodes)
+            auto &succMap = graph->getSuccessorMap();
+            if (succMap.find(edge.dst) != succMap.end())
             {
-                // Rule: PT -> PT Copy
-                if (label == PT && succ_label == Copy)
+                for (const auto &[result, rightLabel] : it->second)
                 {
-                    if (!graph->hasEdge(u, w, PT))
+                    if (succMap[edge.dst].find(rightLabel) != succMap[edge.dst].end())
                     {
-                        graph->addEdge(u, w, PT);
-                        workList.push(CFLREdge(u, w, PT));
+                        for (unsigned next : succMap[edge.dst][rightLabel])
+                        {
+                            addEdgeIfAbsent(edge.src, next, result);
+                        }
                     }
                 }
-                // Rule: SV -> PT Store
-                else if (label == PT && succ_label == Store)
+            }
+        }
+        
+        // Apply binary rules (current edge as right operand)
+        if (auto it = rightRules.find(edge.label); it != rightRules.end())
+        {
+            auto &predMap = graph->getPredecessorMap();
+            if (predMap.find(edge.src) != predMap.end())
+            {
+                for (const auto &[result, leftLabel] : it->second)
                 {
-                    if (!graph->hasEdge(u, w, SV))
+                    if (predMap[edge.src].find(leftLabel) != predMap[edge.src].end())
                     {
-                        graph->addEdge(u, w, SV);
-                        workList.push(CFLREdge(u, w, SV));
-                    }
-                }
-                // Rule: PV -> PT Load
-                else if (label == PT && succ_label == Load)
-                {
-                    if (!graph->hasEdge(u, w, PV))
-                    {
-                        graph->addEdge(u, w, PV);
-                        workList.push(CFLREdge(u, w, PV));
+                        for (unsigned prev : predMap[edge.src][leftLabel])
+                        {
+                            addEdgeIfAbsent(prev, edge.dst, result);
+                        }
                     }
                 }
             }
@@ -101,47 +194,5 @@ void CFLR::processForwardRules(const CFLREdge& edge)
     }
 }
 
-void CFLR::processBackwardRules(const CFLREdge& edge)
-{
-    unsigned u = edge.src;
-    unsigned v = edge.dst;
-    EdgeLabel label = edge.label;
-
-    auto &predMap = graph->getPredecessorMap();
-    if (predMap.count(u))
-    {
-        for (auto const&[pred_label, pred_nodes] : predMap.at(u))
-        {
-            for (unsigned w : pred_nodes)
-            {
-                // Rule: PT -> PT Copy (backward)
-                if (pred_label == PT && label == Copy)
-                {
-                    if (!graph->hasEdge(w, v, PT))
-                    {
-                        graph->addEdge(w, v, PT);
-                        workList.push(CFLREdge(w, v, PT));
-                    }
-                }
-                // Rule: PT -> SV PT
-                else if (pred_label == SV && label == PT)
-                {
-                    if (!graph->hasEdge(w, v, PT))
-                    {
-                        graph->addEdge(w, v, PT);
-                        workList.push(CFLREdge(w, v, PT));
-                    }
-                }
-                // Rule: PT -> PV PT
-                else if (pred_label == PV && label == PT)
-                {
-                    if (!graph->hasEdge(w, v, PT))
-                    {
-                        graph->addEdge(w, v, PT);
-                        workList.push(CFLREdge(w, v, PT));
-                    }
-                }
-            }
-        }
-    }
-}
+void CFLR::processForwardRules(const CFLREdge& edge) {}
+void CFLR::processBackwardRules(const CFLREdge& edge) {}
