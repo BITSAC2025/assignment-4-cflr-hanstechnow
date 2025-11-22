@@ -1,9 +1,5 @@
 #!/bin/bash
 
-# export SVF_DIR=/home/sichao/SVF
-# export LLVM_DIR=/home/sichao/SVF/llvm-16.0.0.obj
-# export Z3_DIR=/home/sichao/SVF/z3.obj
-
 ARGS="$@"
 
 if [ -n "${SVF_DIR}" ] && [ -d "${SVF_DIR}/llvm-16.0.0.obj" ]; then

@@ -172,9 +172,6 @@ public:
     void solve();
     /// Dump results into a file
     void dumpResult();
-private:
-    void processForwardRules(const CFLREdge& edge);
-    void processBackwardRules(const CFLREdge& edge);
 };
 
 #endif //ANSWERS_A4HEADER_H
