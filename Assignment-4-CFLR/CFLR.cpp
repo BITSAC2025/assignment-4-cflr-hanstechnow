@@ -19,7 +19,7 @@ int main(int argc, char **argv)
 
     SVFIRBuilder builder;
     auto pag = builder.build();
-    pag->dump();
+    pag->dump("PAG");
 
     CFLR solver;
     solver.buildGraph(pag);
@@ -32,8 +32,28 @@ int main(int argc, char **argv)
 
 void CFLR::solve()
 {
-    // Helper function: add edge if not present
-    auto addEdgeIfAbsent = [&](unsigned src, unsigned dst, EdgeLabel label) {
+    // 收集所有节点并初始化工作表
+    std::unordered_set<unsigned> allNodes;
+    
+    // 将图中所有已存在的边加入工作表
+    for (auto &nodeItr : graph->getSuccessorMap())
+    {
+        unsigned src = nodeItr.first;
+        allNodes.insert(src);
+        
+        for (auto &lblItr : nodeItr.second)
+        {
+            EdgeLabel label = lblItr.first;
+            for (auto dst : lblItr.second)
+            {
+                allNodes.insert(dst);
+                workList.push(CFLREdge(src, dst, label));
+            }
+        }
+    }
+    
+    // 辅助 lambda 函数：添加边（如果不存在则加入图和工作表）
+    auto addEdge = [this](unsigned src, unsigned dst, EdgeLabel label) {
         if (!graph->hasEdge(src, dst, label))
         {
             graph->addEdge(src, dst, label);
@@ -41,155 +61,261 @@ void CFLR::solve()
         }
     };
     
-    // Step 1: Collect all initial edges and nodes
-    std::unordered_set<unsigned> nodes;
-    std::vector<CFLREdge> initialEdges;
-    
-    auto &succMap = graph->getSuccessorMap();
-    for (auto &[src, labelMap] : succMap)
+    // 为每个节点添加 epsilon 边（VF, VFBar, VA）
+    for (auto node : allNodes)
     {
-        nodes.insert(src);
-        for (auto &[label, dstSet] : labelMap)
-        {
-            for (unsigned dst : dstSet)
-            {
-                nodes.insert(dst);
-                initialEdges.push_back(CFLREdge(src, dst, label));
-            }
-        }
+        addEdge(node, node, VF);
+        addEdge(node, node, VFBar);
+        addEdge(node, node, VA);
     }
     
-    // Step 2: Push initial edges to worklist
-    for (const auto &edge : initialEdges)
-    {
-        workList.push(edge);
-    }
-    
-    // Step 3: Add epsilon edges
-    for (unsigned node : nodes)
-    {
-        addEdgeIfAbsent(node, node, EdgeLabelType::VF);
-        addEdgeIfAbsent(node, node, EdgeLabelType::VFBar);
-        addEdgeIfAbsent(node, node, EdgeLabelType::VA);
-        addEdgeIfAbsent(node, node, EdgeLabelType::VABar);
-    }
-    
-    // Step 4: Define grammar rules
-    // Unary rules
-    std::unordered_map<EdgeLabel, std::vector<EdgeLabel>> unaryRules{
-        {EdgeLabelType::Copy,    {EdgeLabelType::VF}},
-        {EdgeLabelType::CopyBar, {EdgeLabelType::VFBar}},
-    };
-    
-    // Binary rules: result ::= left right
-    std::vector<std::tuple<EdgeLabel, EdgeLabel, EdgeLabel>> binaryRules = {
-        // PT rules
-        {EdgeLabelType::PT,     EdgeLabelType::VFBar,   EdgeLabelType::AddrBar},
-        {EdgeLabelType::PTBar,  EdgeLabelType::Addr,    EdgeLabelType::VF},
-        
-        // VF rules
-        {EdgeLabelType::VF,     EdgeLabelType::VF,      EdgeLabelType::VF},
-        {EdgeLabelType::VF,     EdgeLabelType::SV,      EdgeLabelType::Load},
-        {EdgeLabelType::VF,     EdgeLabelType::PV,      EdgeLabelType::Load},
-        {EdgeLabelType::VF,     EdgeLabelType::Store,   EdgeLabelType::VP},
-        
-        // VFBar rules
-        {EdgeLabelType::VFBar,  EdgeLabelType::VFBar,   EdgeLabelType::VFBar},
-        {EdgeLabelType::VFBar,  EdgeLabelType::LoadBar, EdgeLabelType::SVBar},
-        {EdgeLabelType::VFBar,  EdgeLabelType::LoadBar, EdgeLabelType::VP},
-        {EdgeLabelType::VFBar,  EdgeLabelType::PV,      EdgeLabelType::StoreBar},
-        
-        // VA rules
-        {EdgeLabelType::VA,     EdgeLabelType::LV,      EdgeLabelType::Load},
-        {EdgeLabelType::VA,     EdgeLabelType::VFBar,   EdgeLabelType::VA},
-        {EdgeLabelType::VA,     EdgeLabelType::VA,      EdgeLabelType::VF},
-        {EdgeLabelType::VA,     EdgeLabelType::PT,      EdgeLabelType::PTBar},
-        
-        // VABar rules
-        {EdgeLabelType::VABar,  EdgeLabelType::VABar,   EdgeLabelType::VABar},
-        {EdgeLabelType::VABar,  EdgeLabelType::VF,      EdgeLabelType::VABar},
-        {EdgeLabelType::VABar,  EdgeLabelType::VA,      EdgeLabelType::VFBar},
-        {EdgeLabelType::VABar,  EdgeLabelType::PT,      EdgeLabelType::PTBar},
-        
-        // SV and SVBar rules
-        {EdgeLabelType::SV,     EdgeLabelType::Store,   EdgeLabelType::VA},
-        {EdgeLabelType::SVBar,  EdgeLabelType::VA,      EdgeLabelType::StoreBar},
-        
-        // PV and VP rules
-        {EdgeLabelType::PV,     EdgeLabelType::PTBar,   EdgeLabelType::VA},
-        {EdgeLabelType::VP,     EdgeLabelType::VA,      EdgeLabelType::PT},
-        
-        // PVBar and VPBar rules
-        {EdgeLabelType::PVBar,  EdgeLabelType::VABar,   EdgeLabelType::PT},
-        {EdgeLabelType::VPBar,  EdgeLabelType::PTBar,   EdgeLabelType::VABar},
-        
-        // LV rules
-        {EdgeLabelType::LV,     EdgeLabelType::LoadBar, EdgeLabelType::VA},
-        
-        // LVBar rules
-        {EdgeLabelType::LVBar,  EdgeLabelType::VA,      EdgeLabelType::Load},
-    };
-    
-    // Build lookup tables
-    std::unordered_map<EdgeLabel, std::vector<std::pair<EdgeLabel, EdgeLabel>>> leftRules;
-    std::unordered_map<EdgeLabel, std::vector<std::pair<EdgeLabel, EdgeLabel>>> rightRules;
-    
-    for (const auto &[result, left, right] : binaryRules)
-    {
-        leftRules[left].emplace_back(result, right);
-        rightRules[right].emplace_back(result, left);
-    }
-    
-    // Step 5: Main loop - CFL-Reachability algorithm
+    // 主循环：动态规划 CFL 可达性算法
     while (!workList.empty())
     {
         CFLREdge edge = workList.pop();
+        unsigned x = edge.src;
+        unsigned z = edge.dst;
+        EdgeLabel label = edge.label;
         
-        // Apply unary rules
-        if (auto it = unaryRules.find(edge.label); it != unaryRules.end())
+        auto &succMap = graph->getSuccessorMap();
+        auto &predMap = graph->getPredecessorMap();
+        
+        // 应用语法规则 A ::= B C
+        // 情况1: 新边是 B (x -B-> z)，找所有 z -C-> w，添加 x -A-> w
+        // 情况2: 新边是 C (x -C-> z)，找所有 y -B-> x，添加 y -A-> z
+        
+        // PT ::= VFBar AddrBar
+        if (label == VFBar && succMap.count(z) && succMap[z].count(AddrBar))
         {
-            for (EdgeLabel result : it->second)
+            for (auto w : succMap[z][AddrBar])
+                addEdge(x, w, PT);
+        }
+        if (label == AddrBar && predMap.count(x) && predMap[x].count(VFBar))
+        {
+            for (auto y : predMap[x][VFBar])
+                addEdge(y, z, PT);
+        }
+        
+        // PTBar ::= Addr VF
+        if (label == Addr && succMap.count(z) && succMap[z].count(VF))
+        {
+            for (auto w : succMap[z][VF])
+                addEdge(x, w, PTBar);
+        }
+        if (label == VF && predMap.count(x) && predMap[x].count(Addr))
+        {
+            for (auto y : predMap[x][Addr])
+                addEdge(y, z, PTBar);
+        }
+        
+        // VF ::= VF VF
+        if (label == VF)
+        {
+            if (succMap.count(z) && succMap[z].count(VF))
             {
-                addEdgeIfAbsent(edge.src, edge.dst, result);
+                for (auto w : succMap[z][VF])
+                    addEdge(x, w, VF);
+            }
+            if (predMap.count(x) && predMap[x].count(VF))
+            {
+                for (auto y : predMap[x][VF])
+                    addEdge(y, z, VF);
             }
         }
         
-        // Apply binary rules (current edge as left operand)
-        if (auto it = leftRules.find(edge.label); it != leftRules.end())
+        // VF ::= Copy
+        if (label == Copy)
         {
-            auto &succMap = graph->getSuccessorMap();
-            if (succMap.find(edge.dst) != succMap.end())
+            addEdge(x, z, VF);
+        }
+        
+        // VF ::= SV Load
+        if (label == SV && succMap.count(z) && succMap[z].count(Load))
+        {
+            for (auto w : succMap[z][Load])
+                addEdge(x, w, VF);
+        }
+        if (label == Load && predMap.count(x) && predMap[x].count(SV))
+        {
+            for (auto y : predMap[x][SV])
+                addEdge(y, z, VF);
+        }
+        
+        // VF ::= PV Load
+        if (label == PV && succMap.count(z) && succMap[z].count(Load))
+        {
+            for (auto w : succMap[z][Load])
+                addEdge(x, w, VF);
+        }
+        if (label == Load && predMap.count(x) && predMap[x].count(PV))
+        {
+            for (auto y : predMap[x][PV])
+                addEdge(y, z, VF);
+        }
+        
+        // VF ::= Store VP
+        if (label == Store && succMap.count(z) && succMap[z].count(VP))
+        {
+            for (auto w : succMap[z][VP])
+                addEdge(x, w, VF);
+        }
+        if (label == VP && predMap.count(x) && predMap[x].count(Store))
+        {
+            for (auto y : predMap[x][Store])
+                addEdge(y, z, VF);
+        }
+        
+        // VFBar ::= VFBar VFBar
+        if (label == VFBar)
+        {
+            if (succMap.count(z) && succMap[z].count(VFBar))
             {
-                for (const auto &[result, rightLabel] : it->second)
-                {
-                    if (succMap[edge.dst].find(rightLabel) != succMap[edge.dst].end())
-                    {
-                        for (unsigned next : succMap[edge.dst][rightLabel])
-                        {
-                            addEdgeIfAbsent(edge.src, next, result);
-                        }
-                    }
-                }
+                for (auto w : succMap[z][VFBar])
+                    addEdge(x, w, VFBar);
+            }
+            if (predMap.count(x) && predMap[x].count(VFBar))
+            {
+                for (auto y : predMap[x][VFBar])
+                    addEdge(y, z, VFBar);
             }
         }
         
-        // Apply binary rules (current edge as right operand)
-        if (auto it = rightRules.find(edge.label); it != rightRules.end())
+        // VFBar ::= CopyBar
+        if (label == CopyBar)
         {
-            auto &predMap = graph->getPredecessorMap();
-            if (predMap.find(edge.src) != predMap.end())
-            {
-                for (const auto &[result, leftLabel] : it->second)
-                {
-                    if (predMap[edge.src].find(leftLabel) != predMap[edge.src].end())
-                    {
-                        for (unsigned prev : predMap[edge.src][leftLabel])
-                        {
-                            addEdgeIfAbsent(prev, edge.dst, result);
-                        }
-                    }
-                }
-            }
+            addEdge(x, z, VFBar);
+        }
+        
+        // VFBar ::= LoadBar SVBar
+        if (label == LoadBar && succMap.count(z) && succMap[z].count(SVBar))
+        {
+            for (auto w : succMap[z][SVBar])
+                addEdge(x, w, VFBar);
+        }
+        if (label == SVBar && predMap.count(x) && predMap[x].count(LoadBar))
+        {
+            for (auto y : predMap[x][LoadBar])
+                addEdge(y, z, VFBar);
+        }
+        
+        // VFBar ::= LoadBar VP
+        if (label == LoadBar && succMap.count(z) && succMap[z].count(VP))
+        {
+            for (auto w : succMap[z][VP])
+                addEdge(x, w, VFBar);
+        }
+        if (label == VP && predMap.count(x) && predMap[x].count(LoadBar))
+        {
+            for (auto y : predMap[x][LoadBar])
+                addEdge(y, z, VFBar);
+        }
+        
+        // VFBar ::= PV StoreBar
+        if (label == PV && succMap.count(z) && succMap[z].count(StoreBar))
+        {
+            for (auto w : succMap[z][StoreBar])
+                addEdge(x, w, VFBar);
+        }
+        if (label == StoreBar && predMap.count(x) && predMap[x].count(PV))
+        {
+            for (auto y : predMap[x][PV])
+                addEdge(y, z, VFBar);
+        }
+        
+        // VA ::= LV Load
+        if (label == LV && succMap.count(z) && succMap[z].count(Load))
+        {
+            for (auto w : succMap[z][Load])
+                addEdge(x, w, VA);
+        }
+        if (label == Load && predMap.count(x) && predMap[x].count(LV))
+        {
+            for (auto y : predMap[x][LV])
+                addEdge(y, z, VA);
+        }
+        
+        // VA ::= VFBar VA
+        if (label == VFBar && succMap.count(z) && succMap[z].count(VA))
+        {
+            for (auto w : succMap[z][VA])
+                addEdge(x, w, VA);
+        }
+        if (label == VA && predMap.count(x) && predMap[x].count(VFBar))
+        {
+            for (auto y : predMap[x][VFBar])
+                addEdge(y, z, VA);
+        }
+        
+        // VA ::= VA VF
+        if (label == VA && succMap.count(z) && succMap[z].count(VF))
+        {
+            for (auto w : succMap[z][VF])
+                addEdge(x, w, VA);
+        }
+        if (label == VF && predMap.count(x) && predMap[x].count(VA))
+        {
+            for (auto y : predMap[x][VA])
+                addEdge(y, z, VA);
+        }
+        
+        // SV ::= Store VA
+        if (label == Store && succMap.count(z) && succMap[z].count(VA))
+        {
+            for (auto w : succMap[z][VA])
+                addEdge(x, w, SV);
+        }
+        if (label == VA && predMap.count(x) && predMap[x].count(Store))
+        {
+            for (auto y : predMap[x][Store])
+                addEdge(y, z, SV);
+        }
+        
+        // SVBar ::= VA StoreBar
+        if (label == VA && succMap.count(z) && succMap[z].count(StoreBar))
+        {
+            for (auto w : succMap[z][StoreBar])
+                addEdge(x, w, SVBar);
+        }
+        if (label == StoreBar && predMap.count(x) && predMap[x].count(VA))
+        {
+            for (auto y : predMap[x][VA])
+                addEdge(y, z, SVBar);
+        }
+        
+        // PV ::= PTBar VA
+        if (label == PTBar && succMap.count(z) && succMap[z].count(VA))
+        {
+            for (auto w : succMap[z][VA])
+                addEdge(x, w, PV);
+        }
+        if (label == VA && predMap.count(x) && predMap[x].count(PTBar))
+        {
+            for (auto y : predMap[x][PTBar])
+                addEdge(y, z, PV);
+        }
+        
+        // VP ::= VA PT
+        if (label == VA && succMap.count(z) && succMap[z].count(PT))
+        {
+            for (auto w : succMap[z][PT])
+                addEdge(x, w, VP);
+        }
+        if (label == PT && predMap.count(x) && predMap[x].count(VA))
+        {
+            for (auto y : predMap[x][VA])
+                addEdge(y, z, VP);
+        }
+        
+        // LV ::= LoadBar VA
+        if (label == LoadBar && succMap.count(z) && succMap[z].count(VA))
+        {
+            for (auto w : succMap[z][VA])
+                addEdge(x, w, LV);
+        }
+        if (label == VA && predMap.count(x) && predMap[x].count(LoadBar))
+        {
+            for (auto y : predMap[x][LoadBar])
+                addEdge(y, z, LV);
         }
     }
 }
